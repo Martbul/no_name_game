@@ -12,6 +12,7 @@ import "core:fmt"
 import "core:net"
 import rl "vendor:raylib"
 
+
 game_state :: struct {
 	players:      map[int]pl.Player,
 	item_manager: ^pl.ItemManager,
@@ -57,7 +58,8 @@ main :: proc() {
 			}
 			menu.draw_menu(&game.menu)
 		} else {
-			update_client_network(&game)
+			//WARN: IPDATE_CLIENT_NETWORK FUCKS THE GAME
+			//update_client_network(&game)
 			update_game(&game)
 			render_game(&game)
 		}
@@ -68,40 +70,40 @@ main :: proc() {
 }
 
 
-init_network :: proc(
-	is_server: bool,
-	server_ip: string = "127.0.0.1",
-) -> (
-	server.Multiplayer_State,
-	bool,
-) {
-	state := server.Multiplayer_State {
-		is_server      = is_server,
-		clients        = make(map[int]net.TCP_Socket),
-		next_player_id = 1,
-	}
-
-	if is_server {
-		socket, err := net.listen_tcp(net.Endpoint{address = net.IP4_Loopback, port = server.PORT})
-		if err != nil {
-			return state, false
-		}
-		state.socket = socket
-	} else {
-		local_addr, ok := net.parse_ip4_address(server_ip)
-		if !ok {
-			fmt.println("Failed to parse IP address")
-			return state, false
-		}
-		socket, err := net.dial_tcp(net.Endpoint{address = local_addr, port = server.PORT})
-		if err != nil {
-			return state, false
-		}
-		state.socket = socket
-	}
-
-	return state, true
-}
+//init_network :: proc(
+//	is_server: bool,
+//	server_ip: string = "127.0.0.1",
+//) -> (
+//	server.Multiplayer_State,
+//	bool,
+//) {
+//	state := server.Multiplayer_State {
+//		is_server      = is_server,
+//		clients        = make(map[int]net.TCP_Socket),
+//		next_player_id = 1,
+//	}
+//
+//	if is_server {
+//		socket, err := net.listen_tcp(net.Endpoint{address = net.IP4_Loopback, port = server.PORT})
+//		if err != nil {
+//			return state, false
+//		}
+//		state.socket = socket
+//	} else {
+//		local_addr, ok := net.parse_ip4_address(server_ip)
+//		if !ok {
+//			fmt.println("Failed to parse IP address")
+//			return state, false
+//		}
+///		socket, err := net.dial_tcp(net.Endpoint{address = local_addr, port = server.PORT})
+//		if err != nil {
+//			return state, false
+///		}
+//		state.socket = socket
+//	}
+//
+//	return state, true
+//}//
 
 
 init_client :: proc(server_ip: string = "127.0.0.1") -> (server.Multiplayer_State, bool) {
@@ -126,41 +128,49 @@ init_client :: proc(server_ip: string = "127.0.0.1") -> (server.Multiplayer_Stat
 }
 
 update_client_network :: proc(game: ^game_state) {
-	// Client updates
+	socket := game.network.socket.(net.TCP_Socket)
+
+	// Send local player position update
 	if local_player, ok := &game.players[game.network.local_player_id]; ok {
 		msg := server.Network_Message {
 			msg_type  = .PLAYER_UPDATE,
 			position  = local_player.position,
 			player_id = game.network.local_player_id,
 		}
-		send_message(game.network.socket.(net.TCP_Socket), msg)
+		// Don't block on send, just try once
+		send_message(socket, msg)
 	}
 
-	// Receive server updates
-	if check_socket_data(game.network.socket.(net.TCP_Socket)) {
-		msg, ok := receive_message(game.network.socket.(net.TCP_Socket))
-		if !ok do return
+	// Try to receive any pending messages
+	if !check_socket_data(socket) do return
 
-		switch msg.msg_type {
-		case .PLAYER_UPDATE:
-			if msg.player_id != game.network.local_player_id {
-				if player, ok := &game.players[msg.player_id]; ok {
-					player.position = msg.position
-				}
-			}
-		case .PLAYER_CONNECT:
-			if msg.player_id != game.network.local_player_id {
-				game.players[msg.player_id] = pl.init_player()
-			}
-		case .PLAYER_DISCONNECT:
+	msg, ok := receive_message(socket)
+	if !ok do return
+
+	#partial switch msg.msg_type {
+	case .PLAYER_CONNECT:
+		if msg.player_id != game.network.local_player_id {
+			fmt.println("New player connected:", msg.player_id)
+			game.players[msg.player_id] = pl.init_player()
+		}
+
+	case .PLAYER_DISCONNECT:
+		if msg.player_id != game.network.local_player_id {
+			fmt.println("Player disconnected:", msg.player_id)
 			delete_key(&game.players, msg.player_id)
-		case .GAME_STATE:
-		// Handle full game state updates if needed
+		}
+
+	case .PLAYER_UPDATE:
+		if msg.player_id != game.network.local_player_id {
+			if player, exists := game.players[msg.player_id]; exists {
+				// Create new player with updated position
+				updated_player := player
+				updated_player.position = msg.position
+				game.players[msg.player_id] = updated_player
+			}
 		}
 	}
 }
-
-
 send_message :: proc(socket: net.TCP_Socket, msg: server.Network_Message) -> bool {
 	data, marshal_err := json.marshal(msg)
 	if marshal_err != nil {
@@ -211,12 +221,17 @@ receive_message :: proc(socket: net.TCP_Socket) -> (server.Network_Message, bool
 
 
 check_socket_data :: proc(socket: net.TCP_Socket) -> bool {
-	// Create a small buffer to peek for data
 	peek_buf: [1]byte
-	//bytes_read, endpoint, err := net.recv_tcp(socket, peek_buf[:], {.Peek, .Non_Blocking})
 	bytes_read, err := net.recv_tcp(socket, peek_buf[:])
 	return bytes_read > 0 && err == nil
 }
+//check_socket_data :: proc(socket: net.TCP_Socket) -> bool {
+//	// Create a small buffer to peek for data
+//	peek_buf: [1]byte
+//	//bytes_read, endpoint, err := net.recv_tcp(socket, peek_buf[:], {.Peek, .Non_Blocking})
+//	bytes_read, err := net.recv_tcp(socket, peek_buf[:])
+//	return bytes_read > 0 && err == nil
+//}
 
 
 run_client :: proc(server_ip: string) {
