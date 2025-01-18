@@ -5,7 +5,7 @@ SCREEN_WIDTH :: 1920
 SCREEN_HEIGHT :: 1080
 
 //Player
-PLAYER_TEXTURE :: "assets/player/scarfy.png"
+PLAYER_TEXTURE :: "client/assets/player/scarfy.png"
 
 //Phisics
 PLAYER_SPEED :: 10.0

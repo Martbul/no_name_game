@@ -1,27 +1,30 @@
 ODIN = odin
-APP_NAME = no_name_game
-BUILD_DIR = ./build
-SRC_FILE = src/main/main.odin
 
-.PHONY: all
-all: build run_server
+# App names
+CLIENT_NAME = game_client
 
-.PHONY: build
-build:
-	$(ODIN) build $(SRC_FILE) -out:$(BUILD_DIR)/$(APP_NAME)
+# Directories
+CLIENT_DIR = client
+CLIENT_BUILD_DIR = $(CLIENT_DIR)/build
+CLIENT_MAIN_FILE = client/src/main/main.odin
 
-.PHONY: run_server
-run_server:
-	$(ODIN) run src/main/main.odin server
+# Targets
+.PHONY: all client server clean
 
-.PHONY: run_client
-run_client:
-	$(ODIN) run src/main/main.odin client
+all: client
+# Build client
+client: $(CLIENT_BUILD_DIR)
+	$(ODIN) build $(CLIENT_MAIN_FILE) -file -out:$(CLIENT_BUILD_DIR)/$(CLIENT_NAME)
 
-.PHONY: clean
+# Run server
+run: client
+	$(CLIENT_BUILD_DIR)/$(CLIENT_NAME)
+
+# Create build directory if it doesn't exist
+$(CLIENT_BUILD_DIR):
+	mkdir -p $(CLIENT_BUILD_DIR)
+
+
+# Clean build directories
 clean:
-	rm -rf $(BUILD_DIR)
-
-.PHONY: test
-test:
-	$(ODIN) test ./...
+	rm -rf $(CLIENT_BUILD_DIR)

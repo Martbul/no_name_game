@@ -25,8 +25,8 @@ create_menu :: proc() -> Menu {
 	menu := Menu {
 		state = .Main,
 		selected_option = 0,
-		background = rl.LoadTexture("assets/menu/background.jpg"),
-		title_font = rl.LoadFont("assets/fonts/betteroutline/Better Outline.ttf"),
+		background = rl.LoadTexture("client/assets/menu/background.jpg"),
+		title_font = rl.LoadFont("client/assets/fonts/betteroutline/Better Outline.ttf"),
 		button_rect = rl.Rectangle {
 			x = f32(constants.SCREEN_WIDTH / 2 - 100),
 			y = f32(constants.SCREEN_HEIGHT / 2 - 100),
@@ -66,7 +66,7 @@ draw_menu :: proc(menu: ^Menu) {
 
 	rl.DrawTexture(menu.background, 0, 0, rl.WHITE)
 
-	title_text: cstring = fmt.caprint("SkyWays")
+	title_text: cstring = fmt.caprint("no_name_game")
 	title_pos := rl.Vector2 {
 		f32(
 			constants.SCREEN_WIDTH / 2 -

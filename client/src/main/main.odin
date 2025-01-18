@@ -5,14 +5,12 @@ import "../menu"
 import perf "../performance"
 import "../pkg"
 import pl "../player"
+import server "../server_shared"
 import "base:runtime"
 import "core:encoding/json"
 import "core:fmt"
 import "core:net"
 import rl "vendor:raylib"
-
-import server "../../../server"
-
 
 game_state :: struct {
 	players:      map[int]pl.Player,
@@ -24,21 +22,67 @@ game_state :: struct {
 	should_quit:  bool,
 }
 
+
+main :: proc() {
+	rl.InitWindow(constants.SCREEN_WIDTH, constants.SCREEN_HEIGHT, "no_name_game")
+	defer rl.CloseWindow()
+
+	game := init_game()
+
+	fmt.println("Connecting to server...")
+	network_state, ok := init_client("127.0.0.1")
+	if !ok {
+		fmt.println("Failed to connect to server")
+		return
+	}
+
+	game.network = network_state
+
+	// Initialize local player
+	local_player_id := 1
+	game.network.local_player_id = local_player_id
+	game.players[local_player_id] = pl.init_player()
+
+	defer cleanup_game(&game)
+
+	rl.SetTargetFPS(60)
+	pkg.init_logger()
+	defer pkg.destroy_logger()
+
+	for !rl.WindowShouldClose() {
+		if game.menu.is_active {
+			if !menu.update_menu(&game.menu) {
+				game.menu.is_active = false
+				continue
+			}
+			menu.draw_menu(&game.menu)
+		} else {
+			update_client_network(&game)
+			update_game(&game)
+			render_game(&game)
+		}
+	}
+
+	// Cleanup
+	net.close(game.network.socket)
+}
+
+
 init_network :: proc(
 	is_server: bool,
 	server_ip: string = "127.0.0.1",
 ) -> (
-	Multiplayer_State,
+	server.Multiplayer_State,
 	bool,
 ) {
-	state := Multiplayer_State {
+	state := server.Multiplayer_State {
 		is_server      = is_server,
 		clients        = make(map[int]net.TCP_Socket),
 		next_player_id = 1,
 	}
 
 	if is_server {
-		socket, err := net.listen_tcp(net.Endpoint{address = net.IP4_Loopback, port = PORT})
+		socket, err := net.listen_tcp(net.Endpoint{address = net.IP4_Loopback, port = server.PORT})
 		if err != nil {
 			return state, false
 		}
@@ -49,7 +93,7 @@ init_network :: proc(
 			fmt.println("Failed to parse IP address")
 			return state, false
 		}
-		socket, err := net.dial_tcp(net.Endpoint{address = local_addr, port = PORT})
+		socket, err := net.dial_tcp(net.Endpoint{address = local_addr, port = server.PORT})
 		if err != nil {
 			return state, false
 		}
@@ -89,12 +133,12 @@ update_client_network :: proc(game: ^game_state) {
 			position  = local_player.position,
 			player_id = game.network.local_player_id,
 		}
-		server.send_message(game.network.socket.(net.TCP_Socket), msg)
+		send_message(game.network.socket.(net.TCP_Socket), msg)
 	}
 
 	// Receive server updates
-	if server.check_socket_data(game.network.socket.(net.TCP_Socket)) {
-		msg, ok := server.receive_message(game.network.socket.(net.TCP_Socket))
+	if check_socket_data(game.network.socket.(net.TCP_Socket)) {
+		msg, ok := receive_message(game.network.socket.(net.TCP_Socket))
 		if !ok do return
 
 		switch msg.msg_type {
@@ -116,95 +160,62 @@ update_client_network :: proc(game: ^game_state) {
 	}
 }
 
+
+send_message :: proc(socket: net.TCP_Socket, msg: server.Network_Message) -> bool {
+	data, marshal_err := json.marshal(msg)
+	if marshal_err != nil {
+		return false
+	}
+
+	length := len(data)
+	length_bytes := transmute([8]byte)length
+
+	bytes_written, send_err := net.send_tcp(socket, length_bytes[:])
+	if send_err != nil || bytes_written < 0 {
+		return false
+	}
+
+	bytes_written, send_err = net.send_tcp(socket, data)
+	if send_err != nil || bytes_written < 0 {
+		return false
+	}
+
+	return true
+}
+
+receive_message :: proc(socket: net.TCP_Socket) -> (server.Network_Message, bool) {
+	msg: server.Network_Message
+	length_bytes: [8]byte
+
+	bytes_read, recv_err := net.recv_tcp(socket, length_bytes[:])
+	if recv_err != nil || bytes_read < 0 {
+		return msg, false
+	}
+
+	length := transmute(int)length_bytes
+	data := make([]byte, length)
+	defer delete(data)
+
+	bytes_read, recv_err = net.recv_tcp(socket, data)
+	if recv_err != nil || bytes_read < 0 {
+		return msg, false
+	}
+
+	unmarshal_err := json.unmarshal(data, &msg)
+	if unmarshal_err != nil {
+		return msg, false
+	}
+
+	return msg, true
+}
+
+
 check_socket_data :: proc(socket: net.TCP_Socket) -> bool {
 	// Create a small buffer to peek for data
 	peek_buf: [1]byte
 	//bytes_read, endpoint, err := net.recv_tcp(socket, peek_buf[:], {.Peek, .Non_Blocking})
 	bytes_read, err := net.recv_tcp(socket, peek_buf[:])
 	return bytes_read > 0 && err == nil
-}
-
-
-//main :: proc() {
-//
-//	args := runtime.args__
-//
-//	fmt.println("Arguments:", runtime.args__)
-//	if len(args) < 2 {
-//		fmt.println("Usage:")
-//		fmt.println("  Server: program server")
-//		fmt.println("  Client: program client [server_ip]")
-//		return
-//	}
-//
-//	is_server := args[1] == "server"
-//	server_ip := len(args) >= 3 ? args[2] : "127.0.0.1"
-//
-//	network_state, ok := init_network(is_server, string(server_ip))
-//	if !ok {
-//		fmt.println("Failed to initialize network")
-//		return
-//	}
-///
-//	rl.InitWindow(constants.SCREEN_WIDTH, constants.SCREEN_HEIGHT, "SkyWays")
-//	defer rl.CloseWindow()
-//
-//	game := init_game()
-//	game.network = network_state
-//
-//	if !is_server {
-//		// Initialize local player
-//		local_player_id := 1 // First client gets ID 1
-//		game.network.local_player_id = local_player_id
-//		game.players[local_player_id] = pl.init_player()
-//	}
-
-//	defer cleanup_game(&game)
-//
-//	rl.SetTargetFPS(60)
-//	pkg.init_logger()
-//	defer pkg.destroy_logger()
-//
-//	for !rl.WindowShouldClose() {
-//		if game.menu.is_active {
-//			if !menu.update_menu(&game.menu) {
-//				game.menu.is_active = false
-//				continue
-//			}
-//			menu.draw_menu(&game.menu)
-//		} else {
-//			update_network(&game)
-///			update_game(&game)
-//			render_game(&game)
-//		}
-//	}
-//}
-
-main :: proc() {
-	args := runtime.args__
-
-	fmt.println("Arguments:", runtime.args__)
-	if len(args) < 2 {
-		fmt.println("Usage:")
-		fmt.println("  Server: program server")
-		fmt.println("  Client: program client [server_ip]")
-		return
-	}
-
-	is_server := args[1] == "server"
-	server_ip := len(args) >= 3 ? args[2] : "127.0.0.1"
-
-	network_state, ok := init_network(is_server, string(server_ip))
-	if !ok {
-		fmt.println("Failed to initialize network")
-		return
-	}
-
-	if is_server {
-		run_server(&network_state)
-	} else {
-		run_client(&network_state, string(server_ip))
-	}
 }
 
 
@@ -215,7 +226,7 @@ run_client :: proc(server_ip: string) {
 		return
 	}
 
-	rl.InitWindow(constants.SCREEN_WIDTH, constants.SCREEN_HEIGHT, "SkyWays")
+	rl.InitWindow(constants.SCREEN_WIDTH, constants.SCREEN_HEIGHT, "no_name_game")
 	defer rl.CloseWindow()
 
 	game := init_game()
@@ -295,7 +306,7 @@ init_game :: proc() -> game_state {
 		pause        = false,
 		menu         = menu.create_menu(),
 		platforms    = platforms,
-		network      = Multiplayer_State{}, // Placeholder, initialized later
+		network      = server.Multiplayer_State{}, // Placeholder, initialized later
 	}
 }
 
