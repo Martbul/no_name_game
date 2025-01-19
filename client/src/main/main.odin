@@ -59,7 +59,7 @@ main :: proc() {
 			menu.draw_menu(&game.menu)
 		} else {
 			//WARN: IPDATE_CLIENT_NETWORK FUCKS THE GAME
-			//update_client_network(&game)
+			update_client_network(&game)
 			update_game(&game)
 			render_game(&game)
 		}
@@ -118,17 +118,22 @@ init_client :: proc(server_ip: string = "127.0.0.1") -> (server.Multiplayer_Stat
 		fmt.println("Failed to parse IP address")
 		return state, false
 	}
-
+	// Establishes TCP connection to server
 	socket, err := net.dial_tcp(net.Endpoint{address = local_addr, port = server.PORT})
 	if err != nil {
+		fmt.println("Failed to establish connection to the server")
 		return state, false
 	}
+	fmt.println("Successfully connected to server")
+	//INFO: The socet is i32 and it is 11, meaning it is a file descriptor(The OS returns a unique integer identifier (file descriptor) that represents this connection.)
 	state.socket = socket
 	return state, true
 }
 
 update_client_network :: proc(game: ^game_state) {
+	fmt.print("----------DEBUGING-----------")
 	socket := game.network.socket.(net.TCP_Socket)
+	fmt.print(socket)
 
 	// Send local player position update
 	if local_player, ok := &game.players[game.network.local_player_id]; ok {
@@ -171,24 +176,37 @@ update_client_network :: proc(game: ^game_state) {
 		}
 	}
 }
+
+// Client send_message
 send_message :: proc(socket: net.TCP_Socket, msg: server.Network_Message) -> bool {
+	fmt.println("Attempting to send message:")
+	fmt.printf("Message type: %v\n", msg.msg_type)
+	fmt.printf("Player ID: %v\n", msg.player_id)
+	fmt.printf("Position: %v\n", msg.position)
+
 	data, marshal_err := json.marshal(msg)
 	if marshal_err != nil {
+		fmt.println("Marshal error:", marshal_err)
 		return false
 	}
 
 	length := len(data)
-	length_bytes := transmute([8]byte)length
+	fmt.printf("Message length: %v bytes\n", length)
 
+	length_bytes := transmute([8]byte)length
 	bytes_written, send_err := net.send_tcp(socket, length_bytes[:])
 	if send_err != nil || bytes_written < 0 {
+		fmt.println("Error sending length:", send_err)
 		return false
 	}
+	fmt.printf("Length bytes written: %v\n", bytes_written)
 
 	bytes_written, send_err = net.send_tcp(socket, data)
 	if send_err != nil || bytes_written < 0 {
+		fmt.println("Error sending data:", send_err)
 		return false
 	}
+	fmt.printf("Data bytes written: %v\n", bytes_written)
 
 	return true
 }
