@@ -1,5 +1,4 @@
 package main
-
 import "../constants"
 import "../menu"
 import perf "../performance"
@@ -10,6 +9,7 @@ import "base:runtime"
 import "core:encoding/json"
 import "core:fmt"
 import "core:net"
+import "core:time"
 import rl "vendor:raylib"
 
 
@@ -103,156 +103,240 @@ verify_connection :: proc(socket: net.TCP_Socket) -> bool {
 	return send_message(socket, ping_msg)
 }
 
+//update_client_network :: proc(game: ^game_state) {
+//	socket := game.network.socket.(net.TCP_Socket)
+//
+//	// First, try to send update without blocking
+//	if local_player, ok := &game.players[game.network.local_player_id]; ok {
+//		msg := server.Network_Message {
+//			msg_type  = .PLAYER_UPDATE,
+//			position  = local_player.position,
+//			player_id = game.network.local_player_id,
+//		}
+//		send_message(socket, msg)
+//	}
+//
+//	// Quick check for data without blocking
+//	peek_buf: [1]byte
+//	bytes_read, err := net.recv_tcp(socket, peek_buf[:])
+//	if err != nil || bytes_read <= 0 {
+//		return // No data available, continue with game loop
+//	}
+//
+//	// Data is available, now receive the full message
+//	msg, ok := receive_message(socket)
+//	if !ok do return
+//
+//	// Process the message as before
+//	#partial switch msg.msg_type {
+//	case .PLAYER_CONNECT:
+//		if msg.player_id != game.network.local_player_id {
+//			fmt.println("New player connected:", msg.player_id)
+//			game.players[msg.player_id] = pl.init_player()
+//		}
+//
+//	case .PLAYER_DISCONNECT:
+//		if msg.player_id != game.network.local_player_id {
+//			fmt.println("Player disconnected:", msg.player_id)
+//			delete_key(&game.players, msg.player_id)
+//		}
+
+//	case .PLAYER_UPDATE:
+//		if msg.player_id != game.network.local_player_id {
+//			if player, exists := game.players[msg.player_id]; exists {
+//				updated_player := player
+//				updated_player.position = msg.position
+//				game.players[msg.player_id] = updated_player
+//			}
+//		}
+//	}
+//}
+
+encode_length :: proc(length: u64) -> [8]byte {
+	return [8]byte {
+		byte(length >> 56),
+		byte(length >> 48),
+		byte(length >> 40),
+		byte(length >> 32),
+		byte(length >> 24),
+		byte(length >> 16),
+		byte(length >> 8),
+		byte(length),
+	}
+}
+
+decode_length :: proc(bytes: [8]byte) -> u64 {
+	return(
+		u64(bytes[0]) << 56 |
+		u64(bytes[1]) << 48 |
+		u64(bytes[2]) << 40 |
+		u64(bytes[3]) << 32 |
+		u64(bytes[4]) << 24 |
+		u64(bytes[5]) << 16 |
+		u64(bytes[6]) << 8 |
+		u64(bytes[7]) \
+	)
+}
 update_client_network :: proc(game: ^game_state) {
 	socket := game.network.socket.(net.TCP_Socket)
 
-	// First, try to send update without blocking
-	if local_player, ok := &game.players[game.network.local_player_id]; ok {
-		msg := server.Network_Message {
-			msg_type  = .PLAYER_UPDATE,
-			position  = local_player.position,
-			player_id = game.network.local_player_id,
+	// Only send updates every 10 frames (6 times per second)
+	if int(rl.GetFrameTime()) % 10 == 0 {
+		if local_player, ok := &game.players[game.network.local_player_id]; ok {
+			msg := server.Network_Message {
+				msg_type  = .PLAYER_UPDATE,
+				position  = local_player.position,
+				player_id = game.network.local_player_id,
+			}
+			fmt.printf("Sending position update: [%f, %f]\n", msg.position.x, msg.position.y)
+			if !send_message(socket, msg) {
+				fmt.println("Failed to send player update")
+				return
+			}
 		}
-		send_message(socket, msg)
 	}
 
-	// Quick check for data without blocking
-	peek_buf: [1]byte
-	bytes_read, err := net.recv_tcp(socket, peek_buf[:])
-	if err != nil || bytes_read <= 0 {
-		return // No data available, continue with game loop
-	}
-
-	// Data is available, now receive the full message
+	// Try to receive messages (non-blocking)
 	msg, ok := receive_message(socket)
-	if !ok do return
-
-	// Process the message as before
-	#partial switch msg.msg_type {
-	case .PLAYER_CONNECT:
-		if msg.player_id != game.network.local_player_id {
-			fmt.println("New player connected:", msg.player_id)
-			game.players[msg.player_id] = pl.init_player()
-		}
-
-	case .PLAYER_DISCONNECT:
-		if msg.player_id != game.network.local_player_id {
-			fmt.println("Player disconnected:", msg.player_id)
-			delete_key(&game.players, msg.player_id)
-		}
-
-	case .PLAYER_UPDATE:
-		if msg.player_id != game.network.local_player_id {
-			if player, exists := game.players[msg.player_id]; exists {
-				updated_player := player
-				updated_player.position = msg.position
-				game.players[msg.player_id] = updated_player
+	if ok {
+		fmt.printf("Received message type: %v from player: %v\n", msg.msg_type, msg.player_id)
+		#partial switch msg.msg_type {
+		case .PLAYER_CONNECT:
+			if msg.player_id != game.network.local_player_id {
+				fmt.println("New player connected:", msg.player_id)
+				game.players[msg.player_id] = pl.init_player()
+			}
+		case .PLAYER_DISCONNECT:
+			if msg.player_id != game.network.local_player_id {
+				fmt.println("Player disconnected:", msg.player_id)
+				delete_key(&game.players, msg.player_id)
+			}
+		case .PLAYER_UPDATE:
+			if msg.player_id != game.network.local_player_id {
+				if player, exists := game.players[msg.player_id]; exists {
+					updated_player := player
+					updated_player.position = msg.position
+					game.players[msg.player_id] = updated_player
+					fmt.printf(
+						"Updated player %v position to [%f, %f]\n",
+						msg.player_id,
+						msg.position.x,
+						msg.position.y,
+					)
+				}
 			}
 		}
 	}
 }
 
-
-//send_message :: proc(socket: net.TCP_Socket, msg: server.Network_Message) -> bool {
-//	data, marshal_err := json.marshal(msg)
-//	if marshal_err != nil {
-//		fmt.println("Marshal error:", marshal_err)
-//		return false
+//update_client_network :: proc(game: ^game_state) {
+///	socket := game.network.socket.(net.TCP_Socket)
+//
+//	// First, try to send update without blocking
+//	if local_player, ok := &game.players[game.network.local_player_id]; ok {
+//		msg := server.Network_Message {
+//			msg_type  = .PLAYER_UPDATE,
+//			position  = local_player.position,
+//			player_id = game.network.local_player_id,
+//		}
+//		if !send_message(socket, msg) {
+//			fmt.println("Failed to send player update")
+//			return
+//		}
 //	}
 //
-//	length := u32(len(data)) // Use u32 instead of implicit integer
-//	if length > 1024 * 1024 { 	// Add a reasonable size limit (1MB)
-//		fmt.println("Message too large:", length)
-//		return false
+///	// Add a small delay to prevent flooding the network
+//	time.sleep(time.Millisecond * 16) // ~60 FPS
+
+// Try to receive messages
+//	msg, ok := receive_message(socket)
+//	if !ok {
+//		return
 //	}
 
-// Convert length to network byte order (big-endian)
-//	length_bytes := [4]byte {
-//		byte(length >> 24 & 0xFF),
-///		byte(length >> 16 & 0xFF),
-//		byte(length >> 8 & 0xFF),
-//		byte(length & 0xFF),
+//	#partial switch msg.msg_type {
+//	case .PLAYER_CONNECT:
+//		if msg.player_id != game.network.local_player_id {
+//			fmt.println("New player connected:", msg.player_id)
+//			game.players[msg.player_id] = pl.init_player()
+///		}
+//
+//	case .PLAYER_DISCONNECT:
+//		if msg.player_id != game.network.local_player_id {
+//			fmt.println("Player disconnected:", msg.player_id)
+//			delete_key(&game.players, msg.player_id)
+//		}
+//
+//	case .PLAYER_UPDATE:
+//		if msg.player_id != game.network.local_player_id {
+//			if player, exists := game.players[msg.player_id]; exists {
+//				updated_player := player
+///				updated_player.position = msg.position
+//				game.players[msg.player_id] = updated_player
+//			}
+//		}
 //	}
-
-// Send 4-byte length prefix
-//	total_sent := 0
-//	for total_sent < 4 {
-//		bytes_written, send_err := net.send_tcp(socket, length_bytes[total_sent:])
-//		if send_err != nil {
-//			fmt.println("Error sending length:", send_err)
-//			return false
-//		}
-//		if bytes_written <= 0 {
-//			return false
-//		}
-//		total_sent += bytes_written
-//	}
-
-// Send full message data
-//	total_sent = 0
-//	for total_sent < len(data) {
-//		bytes_written, send_err := net.send_tcp(socket, data[total_sent:])
-//		if send_err != nil {
-//			fmt.println("Error sending data:", send_err)
-//			return false
-//		}
-//		if bytes_written <= 0 {
-//			return false
-//		}
-//		total_sent += bytes_written
-//	}
-
-//	return true
 //}
 
-//send_message :: proc(socket: net.TCP_Socket, msg: server.Network_Message) -> bool {
-//	data, marshal_err := json.marshal(msg)
-//	if marshal_err != nil {
-//		fmt.println("Marshal error:", marshal_err)
-//		return false
-//	}
-
-//	length := u32(len(data))
-//	if length == 0 {
-//		fmt.println("Message is empty")
-//		return false
-//	}
-//	if length > 1024 * 1024 { 	// 1MB size limit
-//		fmt.println("Message too large:", length)
-//		return false
-//	}
-
-// Prepare length prefix in big-endian
-//	length_bytes := [4]byte {
-//		byte(length >> 24 & 0xFF),
-//		byte(length >> 16 & 0xFF),
-//		byte(length >> 8 & 0xFF),
-//		byte(length & 0xFF),
-//	}
-
-// Helper to send data efficiently
-//	send_all :: proc(data: []byte, socket: net.TCP_Socket) -> bool {
-//		offset := 0
-//		for offset < len(data) {
-//			bytes_written, send_err := net.send_tcp(socket, data[offset:])
-//			if send_err != nil {
-///				fmt.println("Send error:", send_err)
-//				return false
-//			}
-//			offset += bytes_written
+//receive_message :: proc(socket: net.TCP_Socket) -> (server.Network_Message, bool) {
+//	msg: server.Network_Message
+//	length_bytes: [8]byte
+//
+//	// Read 8-byte length prefix
+//	total_read := 0
+//	for total_read < 8 {
+//		bytes_read, recv_err := net.recv_tcp(socket, length_bytes[total_read:])
+//		if recv_err != nil {
+//			fmt.println("Error reading length:", recv_err)
+//			return msg, false
 //		}
-//		return true
+//		if bytes_read <= 0 {
+//			return msg, false
+//		}
+//		total_read += bytes_read
+///	}
+//
+//	// Convert length prefix to u64 (big-endian)
+//	length :=
+//		u64(length_bytes[0]) << 56 |
+//		u64(length_bytes[1]) << 48 |
+//		u64(length_bytes[2]) << 40 |
+///		u64(length_bytes[3]) << 32 |
+//		u64(length_bytes[4]) << 24 |
+//		u64(length_bytes[5]) << 16 |
+//		u64(length_bytes[6]) << 8 |
+//		u64(length_bytes[7])
+
+//	if length == 0 || length > 1024 * 1024 { 	// Reasonable size limit
+//		fmt.println("Invalid message length:", length)
+//		return msg, false
 //	}
 
-// Send length prefix followed by message data
-//	if !send_all(length_bytes[:], socket) {
-//		return false
-//	}
-//	if !send_all(data, socket) {
-//		return false
+//	data := make([]byte, length)
+//	defer delete(data)
+
+// Read full message data
+//	total_read = 0
+//	for total_read < int(length) {
+//		bytes_read, recv_err := net.recv_tcp(socket, data[total_read:])
+//		if recv_err != nil {
+//			fmt.println("Error reading data:", recv_err)
+//			return msg, false
+//		}
+//		if bytes_read <= 0 {
+//			return msg, false
+//		}
+//		total_read += bytes_read
 //	}
 
-//	return true
+// Deserialize JSON message
+//	unmarshal_err := json.unmarshal(data, &msg)
+//	if unmarshal_err != nil {
+//		fmt.println("Unmarshal error:", unmarshal_err)
+//		return msg, false
+//	}
+//
+//	return msg, true
 //}
 
 send_message :: proc(socket: net.TCP_Socket, msg: server.Network_Message) -> bool {
@@ -262,18 +346,15 @@ send_message :: proc(socket: net.TCP_Socket, msg: server.Network_Message) -> boo
 		return false
 	}
 
-
 	length := u64(len(data))
-	length_bytes := [8]byte {
-		byte(length >> 56 & 0xFF),
-		byte(length >> 48 & 0xFF),
-		byte(length >> 40 & 0xFF),
-		byte(length >> 32 & 0xFF),
-		byte(length >> 24 & 0xFF),
-		byte(length >> 16 & 0xFF),
-		byte(length >> 8 & 0xFF),
-		byte(length & 0xFF),
+	if length == 0 || length > 1024 * 1024 {
+		fmt.println("Invalid message length:", length)
+		return false
 	}
+
+	fmt.printf("Sending message: %s\n", string(data))
+	length_bytes := encode_length(length)
+	fmt.printf("Length encoded: %v (decimal: %v)\n", length_bytes, length)
 
 	// Send length prefix and data
 	send_all := proc(data: []byte, socket: net.TCP_Socket) -> bool {
@@ -281,7 +362,11 @@ send_message :: proc(socket: net.TCP_Socket, msg: server.Network_Message) -> boo
 		for total_sent < len(data) {
 			bytes_sent, send_err := net.send_tcp(socket, data[total_sent:])
 			if send_err != nil {
-				fmt.println("Error sending data:", send_err)
+				fmt.printf("Send error: %v\n", send_err)
+				return false
+			}
+			if bytes_sent <= 0 {
+				fmt.println("Socket closed during send")
 				return false
 			}
 			total_sent += bytes_sent
@@ -289,18 +374,27 @@ send_message :: proc(socket: net.TCP_Socket, msg: server.Network_Message) -> boo
 		return true
 	}
 
-	return send_all(length_bytes[:], socket) && send_all(data, socket)
+	if !send_all(length_bytes[:], socket) {
+		fmt.println("Failed to send length prefix")
+		return false
+	}
+	if !send_all(data, socket) {
+		fmt.println("Failed to send message data")
+		return false
+	}
+	return true
 }
+
 receive_message :: proc(socket: net.TCP_Socket) -> (server.Network_Message, bool) {
 	msg: server.Network_Message
 	length_bytes: [8]byte
 
-	// Read 8-byte length prefix
+	// Read length prefix
 	total_read := 0
 	for total_read < 8 {
 		bytes_read, recv_err := net.recv_tcp(socket, length_bytes[total_read:])
 		if recv_err != nil {
-			fmt.println("Error reading length:", recv_err)
+			fmt.printf("Error reading length prefix: %v\n", recv_err)
 			return msg, false
 		}
 		if bytes_read <= 0 {
@@ -309,31 +403,23 @@ receive_message :: proc(socket: net.TCP_Socket) -> (server.Network_Message, bool
 		total_read += bytes_read
 	}
 
-	// Convert length prefix to u64 (big-endian)
-	length :=
-		u64(length_bytes[0]) << 56 |
-		u64(length_bytes[1]) << 48 |
-		u64(length_bytes[2]) << 40 |
-		u64(length_bytes[3]) << 32 |
-		u64(length_bytes[4]) << 24 |
-		u64(length_bytes[5]) << 16 |
-		u64(length_bytes[6]) << 8 |
-		u64(length_bytes[7])
+	length := decode_length(length_bytes)
+	fmt.printf("Length decoded: %v from bytes: %v\n", length, length_bytes)
 
-	if length == 0 || length > 1024 * 1024 { 	// Reasonable size limit
-		fmt.println("Invalid message length:", length)
+	if length == 0 || length > 1024 * 1024 {
+		fmt.printf("Invalid message length: %v\n", length)
 		return msg, false
 	}
 
 	data := make([]byte, length)
 	defer delete(data)
 
-	// Read full message data
+	// Read message data
 	total_read = 0
 	for total_read < int(length) {
 		bytes_read, recv_err := net.recv_tcp(socket, data[total_read:])
 		if recv_err != nil {
-			fmt.println("Error reading data:", recv_err)
+			fmt.printf("Error reading message data: %v\n", recv_err)
 			return msg, false
 		}
 		if bytes_read <= 0 {
@@ -342,28 +428,72 @@ receive_message :: proc(socket: net.TCP_Socket) -> (server.Network_Message, bool
 		total_read += bytes_read
 	}
 
-	// Deserialize JSON message
+	fmt.printf("Received complete message: %s\n", string(data))
+
 	unmarshal_err := json.unmarshal(data, &msg)
 	if unmarshal_err != nil {
-		fmt.println("Unmarshal error:", unmarshal_err)
+		fmt.printf("Unmarshal error: %v\n", unmarshal_err)
 		return msg, false
 	}
 
 	return msg, true
 }
+//receive_message :: proc(socket: net.TCP_Socket) -> (server.Network_Message, bool) {
+//	msg: server.Network_Message
+//	length_bytes: [8]byte
 
-//check_socket_data :: proc(socket: net.TCP_Socket) -> bool {
-//	peek_buf: [1]byte
-//	bytes_read, err := net.recv_tcp(socket, peek_buf[:])
-///	return bytes_read > 0 && err == nil
+// Read length prefix with timeout
+//	total_read := 0
+//	for total_read < 8 {
+//		bytes_read, recv_err := net.recv_tcp(socket, length_bytes[total_read:])
+//		if recv_err != nil {
+//			return msg, false
+//		}
+//		if bytes_read <= 0 {
+//			return msg, false
+//		}
+//		total_read += bytes_read
+//	}
+//
+//	length :=
+//		u64(length_bytes[0]) << 56 |
+//		u64(length_bytes[1]) << 48 |
+//		u64(length_bytes[2]) << 40 |
+///		u64(length_bytes[3]) << 32 |
+//		u64(length_bytes[4]) << 24 |
+///		u64(length_bytes[5]) << 16 |
+//		u64(length_bytes[6]) << 8 |
+//		u64(length_bytes[7])
+//
+//	if length == 0 || length > 1024 * 1024 {
+//		fmt.println("Invalid message length:", length)
+//		return msg, false
+//	}
+
+//	data := make([]byte, length)
+//	defer delete(data)
+
+//	total_read = 0
+//	for total_read < int(length) {
+//		bytes_read, recv_err := net.recv_tcp(socket, data[total_read:])
+//		if recv_err != nil {
+//			return msg, false
+//		}
+///		if bytes_read <= 0 {
+//			return msg, false
+//		}
+//		total_read += bytes_read
+//	}
+
+//	unmarshal_err := json.unmarshal(data, &msg)
+//	if unmarshal_err != nil {
+//		fmt.println("Unmarshal error:", unmarshal_err)
+//		return msg, false
+//	}
+//
+//	return msg, true
 //}
-//check_socket_data :: proc(socket: net.TCP_Socket) -> bool {
-//	// Create a small buffer to peek for data
-//	peek_buf: [1]byte
-//	//bytes_read, endpoint, err := net.recv_tcp(socket, peek_buf[:], {.Peek, .Non_Blocking})
-//	bytes_read, err := net.recv_tcp(socket, peek_buf[:])
-//	return bytes_read > 0 && err == nil
-//}
+
 check_socket_data :: proc(socket: net.TCP_Socket) -> bool {
 	peek_buf: [1]byte
 	bytes_read, err := net.recv_tcp(socket, peek_buf[:])
